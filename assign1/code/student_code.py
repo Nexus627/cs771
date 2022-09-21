@@ -1,3 +1,4 @@
+from ctypes import sizeof
 import math
 import random
 import glob
@@ -94,7 +95,7 @@ class Scale(object):
     # use bilinear if interpolation is not specified
     if interpolations is None:
       interpolations = [cv2.INTER_LINEAR]
-    assert isinstance(interpolations, collections.Iterable)
+    assert isinstance(interpolations, collections.abc.Iterable)
     self.interpolations = interpolations
 
   def __call__(self, img):
@@ -110,14 +111,22 @@ class Scale(object):
 
     # scale the image
     if isinstance(self.size, int):
-      #################################################################################
-      # Fill in the code here
-      #################################################################################
+      # size is an int
+      width, height = img.shape
+      if height > width:
+        # width is the smaller edge
+        new_width = self.size
+        new_height = self.size * height / width
+      else:
+        # height is the smaller edge
+        new_height = self.size
+        new_width = self.size * width / height
+
+      new_size = (new_width, new_height)
+      img = resize_image(img, new_size, interpolation)
       return img
     else:
-      #################################################################################
-      # Fill in the code here
-      #################################################################################
+      img = resize_image(img, self.size, interpolation)
       return img
 
   def __repr__(self):
