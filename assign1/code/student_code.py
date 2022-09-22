@@ -88,7 +88,7 @@ class Scale(object):
   """
   def __init__(self, size, interpolations=_DEFAULT_INTERPOLATIONS):
     assert (isinstance(size, int)
-            or (isinstance(size, collections.Iterable)
+            or (isinstance(size, collections.abc.Iterable)
                 and len(size) == 2)
            )
     self.size = size
@@ -112,7 +112,7 @@ class Scale(object):
     # scale the image
     if isinstance(self.size, int):
       # size is an int
-      width, height = img.shape
+      height, width, _ = img.shape
       if height > width:
         # width is the smaller edge
         new_width = self.size
@@ -122,12 +122,12 @@ class Scale(object):
         new_height = self.size
         new_width = self.size * width / height
 
-      new_size = (new_width, new_height)
+      new_size = (int(new_width), int(new_height))
       img = resize_image(img, new_size, interpolation)
-      return img
     else:
       img = resize_image(img, self.size, interpolation)
-      return img
+    
+    return img
 
   def __repr__(self):
     if isinstance(self.size, int):
@@ -160,7 +160,7 @@ class RandomSizedCrop(object):
     self.size = size
     if interpolations is None:
       interpolations = [cv2.INTER_LINEAR]
-    assert isinstance(interpolations, collections.Iterable)
+    assert isinstance(interpolations, collections.abc.Iterable)
     self.interpolations = interpolations
     self.num_trials = int(num_trials)
     self.area_range = area_range
@@ -177,22 +177,48 @@ class RandomSizedCrop(object):
       target_area = random.uniform(self.area_range[0], self.area_range[1]) * area
       aspect_ratio = random.uniform(self.ratio_range[0], self.ratio_range[1])
 
-      #################################################################################
-      # Fill in the code here
-      #################################################################################
-      # compute the width and height
-      # note that there are two possibilities
-      # crop the image and resize to output size
+      # Two cases based on the aspect ratio
+      if aspect_ratio <= 1:
+        # width <= height
+        w = int(round(math.sqrt(target_area * aspect_ratio)))  
+        h = int(round(math.sqrt(target_area / aspect_ratio)))
+      else:
+        # width > height
+        w = int(round(math.sqrt(target_area / aspect_ratio)))  
+        h = int(round(math.sqrt(target_area * aspect_ratio)))  
+
+      if 0 < h <= img.shape[0] and 0 < w <= img.shape[1]:
+        # cropping
+        top = random.randint(0, img.shape[0] - h)
+        bottom = top + h
+        left = random.randint(0, img.shape[1] - w)
+        right = left + w
+        img_crop = img[top : bottom, left : right, :]
+        
+        # resizing
+        if isinstance(self.size, int):
+          # output matched to (size, size)
+          im_scale = Scale((self.size, self.size), interpolations=[self.interpolations[interpolation]])
+        else:
+          # output matched to size
+          im_scale = Scale(self.size, interpolations=[self.interpolations[interpolation]]) 
+        
+        img_crop_resized = im_scale(img_crop)
+        return img_crop_resized
 
     # Fall back
     if isinstance(self.size, int):
       im_scale = Scale(self.size, interpolations=self.interpolations)
       img = im_scale(img)
-      #################################################################################
-      # Fill in the code here
-      #################################################################################
-      # with a square sized output, the default is to crop the patch in the center
-      # (after all trials fail)
+      # after all trials fail the default is to crop the patch in the center with a square sized output 
+      height, width, _ = img.shape
+
+      top = (height - self.size)/2
+      bottom = (height + self.size)/2
+      left = (width - self.size)/2
+      right = (width + self.size)/2
+
+      img = img[top : bottom, left : right, :]
       return img
     else:
       # with a pre-specified output size, the default crop is the image itself
@@ -224,9 +250,15 @@ class RandomColor(object):
     self.color_range = color_range
 
   def __call__(self, img):
-    #################################################################################
-    # Fill in the code here
-    #################################################################################
+    r_alpha = random.uniform(-self.color_range, self.color_range)
+    g_alpha = random.uniform(-self.color_range, self.color_range)
+    b_alpha = random.uniform(-self.color_range, self.color_range)
+    print(f'{1 + b_alpha}, {1 + g_alpha}, {1 + r_alpha}')
+    img[:, :, 0] = img[:, :, 0] * (1 + r_alpha)
+    img[:, :, 1] = img[:, :, 1] * (1 + g_alpha)
+    img[:, :, 2] = img[:, :, 2] * (1 + b_alpha)
+    # img = np.clip(img, 0, 255)
+    img = np.uint8(img)
     return img
 
   def __repr__(self):
@@ -244,7 +276,7 @@ class RandomRotate(object):
     self.degree_range = degree_range
     if interpolations is None:
       interpolations = [cv2.INTER_LINEAR]
-    assert isinstance(interpolations, collections.Iterable)
+    assert isinstance(interpolations, collections.abc.Iterable)
     self.interpolations = interpolations
 
   def __call__(self, img):
@@ -256,11 +288,12 @@ class RandomRotate(object):
     if np.abs(degree) <= 1.0:
       return img
 
-    #################################################################################
-    # Fill in the code here
-    #################################################################################
-    # get the max rectangular within the rotated image
-    return img
+    height, width, _ = img.shape
+    center = tuple(np.array(img.shape[1::-1]) / 2)
+    rot_mat = cv2.getRotationMatrix2D(center, degree, 1.0)
+    image_rotated = cv2.warpAffine(img, rot_mat, img.shape[1::-1], flags=self.interpolations[interpolation])
+
+    return image_rotated
 
   def __repr__(self):
     return "Random Rotation [Range {:.2f} - {:.2f} Degree]".format(
