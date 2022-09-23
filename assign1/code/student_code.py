@@ -62,8 +62,8 @@ class RandomHorizontalFlip(object):
         numpy array: Randomly flipped image
     """
     if random.random() < 0.5:
-      img = cv2.flip(img, 1)
-      return img
+      img_flipped = cv2.flip(img, 1)
+      return img_flipped
     return img
 
   def __repr__(self):
@@ -123,11 +123,11 @@ class Scale(object):
         new_width = self.size * width / height
 
       new_size = (int(new_width), int(new_height))
-      img = resize_image(img, new_size, interpolation)
+      img_resized = resize_image(img, new_size, interpolation)
     else:
-      img = resize_image(img, self.size, interpolation)
+      img_resized = resize_image(img, self.size, interpolation)
     
-    return img
+    return img_resized
 
   def __repr__(self):
     if isinstance(self.size, int):
@@ -209,22 +209,22 @@ class RandomSizedCrop(object):
     # Fall back
     if isinstance(self.size, int):
       im_scale = Scale(self.size, interpolations=self.interpolations)
-      img = im_scale(img)
+      img_resized = im_scale(img)
       # after all trials fail the default is to crop the patch in the center with a square sized output 
-      height, width, _ = img.shape
+      height, width, _ = img_resized.shape
 
       top = (height - self.size)/2
       bottom = (height + self.size)/2
       left = (width - self.size)/2
       right = (width + self.size)/2
 
-      img = img[top : bottom, left : right, :]
-      return img
+      img_cropped = img_resized[top : bottom, left : right, :]
+      return img_cropped
     else:
       # with a pre-specified output size, the default crop is the image itself
       im_scale = Scale(self.size, interpolations=self.interpolations)
-      img = im_scale(img)
-      return img
+      img_resized = im_scale(img)
+      return img_resized
 
   def __repr__(self):
     if isinstance(self.size, int):
@@ -253,13 +253,13 @@ class RandomColor(object):
     r_alpha = random.uniform(-self.color_range, self.color_range)
     g_alpha = random.uniform(-self.color_range, self.color_range)
     b_alpha = random.uniform(-self.color_range, self.color_range)
-    print(f'{1 + b_alpha}, {1 + g_alpha}, {1 + r_alpha}')
-    img[:, :, 0] = img[:, :, 0] * (1 + r_alpha)
-    img[:, :, 1] = img[:, :, 1] * (1 + g_alpha)
-    img[:, :, 2] = img[:, :, 2] * (1 + b_alpha)
+    img_colored = img
+    img_colored[:, :, 0] = img[:, :, 0] * (1 + r_alpha)
+    img_colored[:, :, 1] = img[:, :, 1] * (1 + g_alpha)
+    img_colored[:, :, 2] = img[:, :, 2] * (1 + b_alpha)
     # img = np.clip(img, 0, 255)
-    img = np.uint8(img)
-    return img
+    img_colored = np.uint8(img_colored)
+    return img_colored
 
   def __repr__(self):
     return "Random Color [Range {:.2f} - {:.2f}]".format(
@@ -293,7 +293,25 @@ class RandomRotate(object):
     rot_mat = cv2.getRotationMatrix2D(center, degree, 1.0)
     image_rotated = cv2.warpAffine(img, rot_mat, img.shape[1::-1], flags=self.interpolations[interpolation])
 
-    return image_rotated
+    W = width #X
+    H = height #Y
+
+    angle_a = math.radians(abs(degree))
+    angle_b = math.radians(90 - degree)
+
+    angle_a_sin = math.sin(angle_a)
+    angle_b_sin = math.sin(angle_b)
+
+    E = (math.sin(angle_a))/(math.sin(angle_b))* (H-W*(math.sin(angle_a)/math.sin(angle_b)))
+    E = E/ 1 - (math.sin(angle_a)**2/math.sin(angle_b)**2)
+    B = W-E
+    A = (math.sin(angle_a)/math.sin(angle_b))*B
+
+    image_rotated = image_rotated[int(round(E)) : int(round(A)), int(round(W-E)) : int(round(H-A)), :]
+    image_rotated_resized = resize_image(img, (width,height), interpolation)    
+
+    return image_rotated_resized
+
 
   def __repr__(self):
     return "Random Rotation [Range {:.2f} - {:.2f} Degree]".format(
