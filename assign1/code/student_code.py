@@ -257,7 +257,6 @@ class RandomColor(object):
     img_colored[:, :, 0] = img[:, :, 0] * (1 + r_alpha)
     img_colored[:, :, 1] = img[:, :, 1] * (1 + g_alpha)
     img_colored[:, :, 2] = img[:, :, 2] * (1 + b_alpha)
-    # img = np.clip(img, 0, 255)
     img_colored = np.uint8(img_colored)
     return img_colored
 
