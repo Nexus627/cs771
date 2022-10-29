@@ -224,7 +224,7 @@ class CustomConv2d(Module):
 #################################################################################
 class SimpleNet(nn.Module):
     # a simple CNN for image classifcation
-    def __init__(self, conv_op=nn.Conv2d, num_classes=100):
+    def __init__(self, conv_op=nn.Conv2d, num_classes=100, args=None):
         super(SimpleNet, self).__init__()
         # you can start from here and create a better model
         self.features = nn.Sequential(
@@ -253,6 +253,14 @@ class SimpleNet(nn.Module):
         # global avg pooling + FC
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512, num_classes)
+        # Code added for including adversarial training.
+        if args:
+            self.adv_training = args.adv_training
+        else:
+            self.adv_training = False  # adv training is disabled
+        if self.adv_training:
+            self.attacker = default_attack(nn.CrossEntropyLoss(), num_steps=5)
+            # used less epochs to reduce the computation
 
     def reset_parameters(self):
         # init all params
@@ -266,9 +274,11 @@ class SimpleNet(nn.Module):
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x):
-        # you can implement adversarial training here
-        # if self.training:
-        #   # generate adversarial sample based on x
+        if self.training and self.adv_training:
+            # adv sample generation is disable in eval phase
+            x = self.attacker.perturb(self.eval(), x)
+            # after the generation we have to change the model phase
+            self.train()
         x = self.features(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
@@ -434,11 +444,37 @@ class PGDAttack(object):
         # clone the input tensor and disable the gradients
         output = input.clone()
         input.requires_grad = False
+        # Denormalize the input
+        input_denormalize = self.denormalize(input)
 
         # loop over the number of steps
-        # for _ in range(self.num_steps):
+        for _ in range(self.num_steps):
         #################################################################################
         # Fill in the code here
+            output.requires_grad = True
+            preds = model(output) # set the grad for the input
+
+            model.zero_grad() 
+            # compute the least conf samples which we will use as proxy
+            _, target_labels = torch.min(preds, 1) 
+            # Push the target input device
+            target_labels = target_labels.to(input.device)
+            # The loss fn is cross entropy as it's a classification problem
+            cost = -self.loss_fn(preds, target_labels)
+            
+            # Update adversarial images, don't store the PyTorch graph. 
+            grad = torch.autograd.grad(
+                cost, output, retain_graph=False, create_graph=False
+            )[0]
+            # Denormalize the output and add it to the step size * grad sign
+            output = self.denormalize(output.detach()) + self.step_size * grad.sign()
+            # Delta is clamped between -epsilon and +epsilon
+            delta = torch.clamp(
+                output - input_denormalize, min=-self.epsilon, max=self.epsilon
+            )
+            # clip the input tensor values between 0 to 1
+            output = torch.clamp(input_denormalize + delta, min=0, max=1) 
+            output = (self.normalize(output)).detach()
         #################################################################################
 
         return output
@@ -479,6 +515,22 @@ class GradAttention(object):
 
         #################################################################################
         # Fill in the code here
+        model.eval()
+        model.zero_grad()
+        # We want to calculate gradient of higest score w.r.t. input
+        # so set requires_grad to True for input and do forward pass to calculate predictions
+        preds = model(input)
+        score, indices = torch.max(preds, 1)
+        # backward pass to get gradients of score predicted class w.r.t. input image
+        target = indices
+        target = target.to(preds.device)
+
+        loss = self.loss_fn(preds, target)
+        loss.backward()
+        # get max along channel axis
+        slc, _ = torch.max(torch.abs(input.grad.data), dim=1)  # .grad[0]
+        output = slc.unsqueeze_(1)
+
         #################################################################################
 
         return output
