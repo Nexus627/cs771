@@ -57,10 +57,28 @@ class CustomConv2DFunction(Function):
 
         #################################################################################
         # Fill in the code here
+        # Unfold the input features using nn functional unfold from Pytorch
+        inp_unfold = torch.nn.functional.unfold(
+            input_feats, (kernel_size, kernel_size), stride=stride, padding=padding
+        )
+        # Out unfold is just the matrix multiplication of input unfold with the weight matrix (and adding bias)
+        out_unfold = (
+            inp_unfold.transpose(1, 2).matmul(weight.view(weight.size(0), -1).t()) + bias
+        )
+        # Transposing.
+        out_unfold = out_unfold.transpose(1, 2)
+        # Get output dimensions from the formulas.
+        output_h = int(
+            int(input_feats.size(2) + (2 * padding) - kernel_size) / stride + 1
+        )
+        output_w = int(
+            int(input_feats.size(3) + (2 * padding) - kernel_size) / stride + 1
+        )
+        # Folding it back to desired shape
+        output = torch.nn.functional.fold(out_unfold, (output_h, output_w), (1, 1))
         #################################################################################
-
         # save for backward (you need to save the unfolded tensor into ctx)
-        # ctx.save_for_backward(your_vars, weight, bias)
+        ctx.save_for_backward(input_feats, weight, bias)
 
         return output
 
@@ -79,7 +97,7 @@ class CustomConv2DFunction(Function):
 
         """
         # unpack tensors and initialize the grads
-        # your_vars, weight, bias = ctx.saved_tensors
+        input, weight, bias = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
 
         # recover the conv params
@@ -91,6 +109,41 @@ class CustomConv2DFunction(Function):
 
         #################################################################################
         # Fill in the code here
+        # Reshaping grad output (dY)
+        grad_output_unfold = grad_output.view(grad_output.size(0), grad_output.size(1), -1)
+        # Calculate dX which is W * dY
+        grad_input = (
+            weight.view(weight.size(0), -1).transpose(0, 1).matmul(grad_output_unfold)
+        )
+        # Fold the grad input back, dX
+        grad_input = torch.nn.functional.fold(
+            grad_input,
+            (input_height, input_width),
+            (kernel_size, kernel_size),
+            stride=stride,
+            padding=(padding, padding),
+        )
+        #Compute dW = dY * X_T
+        # So, unfold the input features, take transpose and multiply with unfolded output gradients
+        grad_weight = grad_output_unfold.matmul(
+            (torch.nn.functional.unfold(
+                input, (kernel_size, kernel_size), stride=stride, padding=padding
+                )
+            ).transpose(1, 2)
+        )
+        # Reshape the grad weights i.e dW and squeeze some dimensions and fold it back
+        grad_weight = grad_weight.reshape(
+            [grad_output.size(0), grad_output.size(1), -1, kernel_size * kernel_size]
+        )
+        grad_weight = grad_weight.view(
+            [grad_output.size(0), -1, kernel_size * kernel_size]
+        )
+        grad_weight = torch.nn.functional.fold(
+            grad_weight, (kernel_size, kernel_size), (1, 1)
+        )
+        grad_weight = grad_weight.reshape(
+            [grad_output.size(0), grad_output.size(1), -1, kernel_size, kernel_size]
+        )
         #################################################################################
         # compute the gradients w.r.t. input and params
 
