@@ -123,7 +123,7 @@ class CustomConv2DFunction(Function):
             stride=stride,
             padding=(padding, padding),
         )
-        #Compute dW = dY * X_T
+        # Compute dW = dY * X_T
         # So, unfold the input features, take transpose and multiply with unfolded output gradients
         grad_weight = grad_output_unfold.matmul(
             (torch.nn.functional.unfold(
