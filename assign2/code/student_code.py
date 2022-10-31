@@ -353,6 +353,11 @@ class SimpleViT(nn.Module):
         ########################################################################
         # the implementation shall start from embedding patches,
         # followed by some transformer blocks
+        self.patch_embeddings = PatchEmbed(kernel_size=(patch_size, patch_size), stride=(patch_size, patch_size), in_chans=in_chans, embed_dim=embed_dim)
+        self.ltransformer_layer = TransformerBlock(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop_path=drop_path_rate, norm_layer=norm_layer, act_layer=act_layer, window_size=window_size)
+        self.encoder = nn.Sequential(*[self.transformer_layer for _ in range(depth)])
+        import pdb; pdb.set_trace()
+        self.classifier = nn.Linear(in_features=embed_dim, out_features=num_classes)
 
         if self.pos_embed is not None:
             trunc_normal_(self.pos_embed, std=0.02)
@@ -373,8 +378,12 @@ class SimpleViT(nn.Module):
         ########################################################################
         # Fill in the code here
         ########################################################################
+        x = self.patch_embeddings(x)
+        x = x + self.pos_embed
+        x = self.encoder(x)
+        x = x.reshape(x.shape[0], -1, x.shape[3]).mean(dim=1)
+        x = self.classifier(x)
         return x
-
 
 # change this to your model!
 default_cnn_model = SimpleNet
