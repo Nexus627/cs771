@@ -227,27 +227,57 @@ class SimpleNet(nn.Module):
     def __init__(self, conv_op=nn.Conv2d, num_classes=100, args=None):
         super(SimpleNet, self).__init__()
         # you can start from here and create a better model
+        # self.features = nn.Sequential(
+        #     # conv1 block: conv 7x7
+        #     conv_op(3, 64, kernel_size=7, stride=2, padding=3),
+        #     nn.ReLU(inplace=True),
+        #     # max pooling 1/2
+        #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+        #     # conv2 block: simple bottleneck
+        #     conv_op(64, 64, kernel_size=1, stride=1, padding=0),
+        #     nn.ReLU(inplace=True),
+        #     conv_op(64, 64, kernel_size=3, stride=1, padding=1),
+        #     nn.ReLU(inplace=True),
+        #     conv_op(64, 256, kernel_size=1, stride=1, padding=0),
+        #     nn.ReLU(inplace=True),
+        #     # max pooling 1/2
+        #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+        #     # conv3 block: simple bottleneck
+        #     conv_op(256, 128, kernel_size=1, stride=1, padding=0),
+        #     nn.ReLU(inplace=True),
+        #     conv_op(128, 128, kernel_size=3, stride=1, padding=1),
+        #     nn.ReLU(inplace=True),
+        #     conv_op(128, 512, kernel_size=1, stride=1, padding=0),
+        #     nn.ReLU(inplace=True),
+        # )
         self.features = nn.Sequential(
             # conv1 block: conv 7x7
             conv_op(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             # max pooling 1/2
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             # conv2 block: simple bottleneck
             conv_op(64, 64, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             conv_op(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             conv_op(64, 256, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             # max pooling 1/2
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             # conv3 block: simple bottleneck
             conv_op(256, 128, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             conv_op(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             conv_op(128, 512, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
         )
         # global avg pooling + FC
@@ -356,7 +386,7 @@ class SimpleViT(nn.Module):
         self.patch_embeddings = PatchEmbed(kernel_size=(patch_size, patch_size), stride=(patch_size, patch_size), in_chans=in_chans, embed_dim=embed_dim)
         self.transformer_layer = TransformerBlock(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop_path=drop_path_rate, norm_layer=norm_layer, act_layer=act_layer, window_size=window_size)
         self.encoder = nn.Sequential(*[self.transformer_layer for _ in range(depth)])
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         self.classifier = nn.Linear(in_features=embed_dim, out_features=num_classes)
 
         if self.pos_embed is not None:
