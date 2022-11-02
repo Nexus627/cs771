@@ -227,29 +227,60 @@ class SimpleNet(nn.Module):
     def __init__(self, conv_op=nn.Conv2d, num_classes=100, args=None):
         super(SimpleNet, self).__init__()
         # you can start from here and create a better model
+        self.features = nn.Sequential(
+            # conv1 block: conv 7x7
+            conv_op(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.ReLU(inplace=True),
+            # max pooling 1/2
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            # conv2 block: simple bottleneck
+            conv_op(64, 64, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+            conv_op(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            conv_op(64, 256, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+            # max pooling 1/2
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            # conv3 block: simple bottleneck
+            conv_op(256, 128, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+            conv_op(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            conv_op(128, 512, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+        )
         # self.features = nn.Sequential(
         #     # conv1 block: conv 7x7
         #     conv_op(3, 64, kernel_size=7, stride=2, padding=3),
+        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     # max pooling 1/2
         #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         #     # conv2 block: simple bottleneck
         #     conv_op(64, 64, kernel_size=1, stride=1, padding=0),
+        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     conv_op(64, 64, kernel_size=3, stride=1, padding=1),
+        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     conv_op(64, 256, kernel_size=1, stride=1, padding=0),
+        #     nn.BatchNorm2d(256),
         #     nn.ReLU(inplace=True),
         #     # max pooling 1/2
         #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         #     # conv3 block: simple bottleneck
         #     conv_op(256, 128, kernel_size=1, stride=1, padding=0),
+        #     nn.BatchNorm2d(128),
         #     nn.ReLU(inplace=True),
         #     conv_op(128, 128, kernel_size=3, stride=1, padding=1),
+        #     nn.BatchNorm2d(128),
         #     nn.ReLU(inplace=True),
         #     conv_op(128, 512, kernel_size=1, stride=1, padding=0),
+        #     nn.BatchNorm2d(512),
         #     nn.ReLU(inplace=True),
         # )
+        print("Batch Norm")
         self.features = nn.Sequential(
             # conv1 block: conv 7x7
             conv_op(3, 64, kernel_size=7, stride=2, padding=3),
@@ -448,7 +479,7 @@ def get_val_transforms(normalize):
 # Part III: Adversarial samples and Attention
 #################################################################################
 class PGDAttack(object):
-    def __init__(self, loss_fn, num_steps=10, step_size=0.01, epsilon=0.1):
+    def __init__(self, loss_fn, num_steps=5, step_size=0.01, epsilon=0.1):
         """
         Attack a network by Project Gradient Descent. The attacker performs
         k steps of gradient descent of step size a, while always staying
@@ -487,6 +518,7 @@ class PGDAttack(object):
           output: (torch tensor) an adversarial sample of the given network
         """
         # clone the input tensor and disable the gradients
+        
         output = input.clone()
         input.requires_grad = False
         # Denormalize the input

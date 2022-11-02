@@ -133,6 +133,9 @@ parser.add_argument(
 )
 parser.add_argument("--gpu", default=0, type=int, help="GPU ID to use.")
 
+parser.add_argument('--adv-training', action='store_true',
+                    help='Use pretrained resnet18 model') 
+
 # tensorboard writer
 writer = SummaryWriter("../logs")
 
