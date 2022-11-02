@@ -227,59 +227,60 @@ class SimpleNet(nn.Module):
     def __init__(self, conv_op=nn.Conv2d, num_classes=100, args=None):
         super(SimpleNet, self).__init__()
         # you can start from here and create a better model
-        self.features = nn.Sequential(
-            # conv1 block: conv 7x7
-            conv_op(3, 64, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(inplace=True),
-            # max pooling 1/2
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # conv2 block: simple bottleneck
-            conv_op(64, 64, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-            conv_op(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            conv_op(64, 256, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-            # max pooling 1/2
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # conv3 block: simple bottleneck
-            conv_op(256, 128, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-            conv_op(128, 128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            conv_op(128, 512, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-        )
         # self.features = nn.Sequential(
         #     # conv1 block: conv 7x7
         #     conv_op(3, 64, kernel_size=7, stride=2, padding=3),
-        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     # max pooling 1/2
         #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         #     # conv2 block: simple bottleneck
         #     conv_op(64, 64, kernel_size=1, stride=1, padding=0),
-        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     conv_op(64, 64, kernel_size=3, stride=1, padding=1),
-        #     nn.BatchNorm2d(64),
         #     nn.ReLU(inplace=True),
         #     conv_op(64, 256, kernel_size=1, stride=1, padding=0),
-        #     nn.BatchNorm2d(256),
         #     nn.ReLU(inplace=True),
         #     # max pooling 1/2
         #     nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         #     # conv3 block: simple bottleneck
         #     conv_op(256, 128, kernel_size=1, stride=1, padding=0),
-        #     nn.BatchNorm2d(128),
         #     nn.ReLU(inplace=True),
         #     conv_op(128, 128, kernel_size=3, stride=1, padding=1),
-        #     nn.BatchNorm2d(128),
         #     nn.ReLU(inplace=True),
         #     conv_op(128, 512, kernel_size=1, stride=1, padding=0),
-        #     nn.BatchNorm2d(512),
         #     nn.ReLU(inplace=True),
         # )
+        print("Batch Norm")
+        self.features = nn.Sequential(
+            # conv1 block: conv 7x7
+            conv_op(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            # max pooling 1/2
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            # conv2 block: simple bottleneck
+            conv_op(64, 64, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            conv_op(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            conv_op(64, 256, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            # max pooling 1/2
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            # conv3 block: simple bottleneck
+            conv_op(256, 128, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            conv_op(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            conv_op(128, 512, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+        )
         # global avg pooling + FC
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512, num_classes)
