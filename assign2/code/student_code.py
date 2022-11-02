@@ -250,7 +250,6 @@ class SimpleNet(nn.Module):
         #     conv_op(128, 512, kernel_size=1, stride=1, padding=0),
         #     nn.ReLU(inplace=True),
         # )
-        print("Batch Norm")
         self.features = nn.Sequential(
             # conv1 block: conv 7x7
             conv_op(3, 64, kernel_size=7, stride=2, padding=3),
