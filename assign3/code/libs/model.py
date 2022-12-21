@@ -65,12 +65,26 @@ class FCOSClassificationHead(nn.Module):
         depth order, i.e., output[0] will be the feature map with highest resolution
         and output[-1] will the featuer map with lowest resolution. The list length is
         equal to the number of pyramid levels. Each tensor in the list will be
-        of size N x 1 x H x W, storing the classification logits (scores).
+        of size N x C x H x W, storing the classification logits (scores).
 
         Some re-arrangement of the outputs is often preferred for training / inference.
         You can choose to do it here, or in compute_loss / inference.
         """
-        return x
+        all_cls_logits = []
+
+        for features in x:
+            cls_logits = self.conv(features)
+            cls_logits = self.cls_logits(cls_logits)
+
+            # Permute classification output from (N, A * K, H, W) to (N, HWA, K).
+            N, _, H, W = cls_logits.shape
+            cls_logits = cls_logits.view(N, -1, self.num_classes, H, W)
+            cls_logits = cls_logits.permute(0, 3, 4, 1, 2)
+            cls_logits = cls_logits.reshape(N, -1, self.num_classes)  # Size=(N, HWA, 4)
+
+            all_cls_logits.append(cls_logits)
+
+        return torch.cat(all_cls_logits, dim=1)
 
 
 class FCOSRegressionHead(nn.Module):
@@ -105,6 +119,10 @@ class FCOSRegressionHead(nn.Module):
         )
 
         self.apply(self.init_weights)
+        # The following line makes sure the regression head output a non-zero value.
+        # If your regression loss remains the same, try to uncomment this line.
+        # It helps the initial stage of training
+        # torch.nn.init.normal_(self.bbox_reg[0].bias, mean=1.0, std=0.1)
 
     def init_weights(self, m):
         if isinstance(m, nn.Conv2d):
@@ -126,7 +144,30 @@ class FCOSRegressionHead(nn.Module):
         Some re-arrangement of the outputs is often preferred for training / inference.
         You can choose to do it here, or in compute_loss / inference.
         """
-        return x, x
+        all_bbox_regression = []
+        all_bbox_ctrness = []
+
+        for features in x:
+            bbox_feature = self.conv(features)
+            bbox_regression = nn.functional.relu(self.bbox_reg(bbox_feature))
+            bbox_ctrness = self.bbox_ctrness(bbox_feature)
+
+            # # permute bbox regression output from (N, 4 * A, H, W) to (N, HWA, 4).
+            N, _, H, W = bbox_regression.shape
+            bbox_regression = bbox_regression.view(N, -1, 4, H, W)
+            bbox_regression = bbox_regression.permute(0, 3, 4, 1, 2)
+            bbox_regression = bbox_regression.reshape(N, -1, 4)  # Size=(N, HWA, 4)
+            all_bbox_regression.append(bbox_regression)
+
+            #permute bbox ctrness output from (N, 1 * A, H, W) to (N, HWA, 1).
+            bbox_ctrness = bbox_ctrness.view(N, -1, 1, H, W)
+            bbox_ctrness = bbox_ctrness.permute(0, 3, 4, 1, 2)
+            bbox_ctrness = bbox_ctrness.reshape(N, -1, 1)
+            all_bbox_ctrness.append(bbox_ctrness)
+
+        # return all_bbox_regression, all_bbox_ctrness
+        return torch.cat(all_bbox_regression, dim=1), torch.cat(all_bbox_ctrness, dim=1)
+        # return x, x
 
 
 class FCOS(nn.Module):
@@ -332,71 +373,101 @@ class FCOS(nn.Module):
             # return detectrion results during inference
             return detections
 
-    """
-    Fill in the missing code here. This is probably the most tricky part
-    in this assignment. Here you will need to compute the object label for each point
-    within the feature pyramid. If a point lies around the center of a foreground object
-    (as controlled by self.center_sampling_radius), its regression and center-ness
-    targets will also need to be computed.
+    def compute_centerness_targets(self, targets, points, strides, reg_range):
+        # Extract bounding box coordinates from targets
+        boxes = targets[:, :-1]
 
-    Further, three loss terms will be attached to compare the model outputs to the
-    desired targets (that you have computed), including
-    (1) classification (using sigmoid focal for all points)
-    (2) regression loss (using GIoU and only on foreground points)
-    (3) center-ness loss (using binary cross entropy and only on foreground points)
+        # Compute centerness targets
+        cx, cy = points[:, :, 0], points[:, :, 1]
+        l, t, r, b = boxes[:, :, 0], boxes[:, :, 1], boxes[:, :, 2], boxes[:, :, 3]
+        w, h = r - l, b - t
+        centerness = ((cx - l) / w) * ((cy - t) / h)
+        centerness = torch.sqrt(centerness)
 
-    Some of the implementation details that might not be obvious
-    * The output regression targets are divided by the feature stride (Eq 1 in the paper)
-    * All losses are normalized by the number of positive points (Eq 2 in the paper)
+        # Normalize centerness values
+        x_range = reg_range[:, 1] - reg_range[:, 0]
+        y_range = reg_range[:, 3] - reg_range[:, 2]
+        centerness /= (x_range / strides) * (y_range / strides)
+        return centerness
 
-    The output must be a dictionary including the loss values
-    {
-        "cls_loss": Tensor (1)
-        "reg_loss": Tensor (1)
-        "ctr_loss": Tensor (1)
-        "final_loss": Tensor (1)
-    }
-    where the final_loss is a sum of the three losses and will be used for training.
-    """
 
     def compute_loss(
         self, targets, points, strides, reg_range, cls_logits, reg_outputs, ctr_logits
     ):
-        return losses
+        """
+        Fill in the missing code here. This is probably the most tricky part
+        in this assignment. Here you will need to compute the object label for each point
+        within the feature pyramid. If a point lies around the center of a foreground object
+        (as controlled by self.center_sampling_radius), its regression and center-ness
+        targets will also need to be computed.
 
-    """
-    Fill in the missing code here. The inference is also a bit involved. It is
-    much easier to think about the inference on a single image
-    (a) Loop over every pyramid level
-        (1) compute the object scores
-        (2) deocde the boxes
-        (3) only keep boxes with scores larger than self.score_thresh
-    (b) Combine all object candidates across levels and keep the top K (self.topk_candidates)
-    (c) Remove boxes outside of the image boundaries (due to padding)
-    (d) Run non-maximum suppression to remove any duplicated boxes
-    (e) keep the top K boxes after NMS (self.detections_per_img)
+        Further, three loss terms will be attached to compare the model outputs to the
+        desired targets (that you have computed), including
+        (1) classification (using sigmoid focal for all points)
+        (2) regression loss (using GIoU and only on foreground points)
+        (3) center-ness loss (using binary cross entropy and only on foreground points)
 
-    Some of the implementation details that might not be obvious
-    * As the output regression target is divided by the feature stride during training,
-    you will have to multiply the regression outputs by the stride at inference time.
-    * Most of the detectors will allow two overlapping boxes from two different categories
-    (e.g., one from "shirt", the other from "person"). That means that
-        (a) one can decode two same boxes of different categories from one location;
-        (b) NMS is only performed within each category.
-    * Regression range is not used, as the range is not enforced during inference.
-    * image_shapes is needed to remove boxes outside of the images.
+        Some of the implementation details that might not be obvious
+        * The output regression targets are divided by the feature stride (Eq 1 in the paper)
+        * All losses are normalized by the number of positive points (Eq 2 in the paper)
 
-    The output must be a list of dictionary items (one for each image) following
-    [
+        The output must be a dictionary including the loss values
         {
-            "boxes": Tensor (N x 4)
-            "scores": Tensor (N, )
-            "labels": Tensor (N, )
-        },
-    ]
-    """
+            "cls_loss": Tensor (1)
+            "reg_loss": Tensor (1)
+            "ctr_loss": Tensor (1)
+            "final_loss": Tensor (1)
+        }
+        where the final_loss is a sum of the three losses and will be used for training.
+        """
+        cls_labels = targets[:, -1]
+        cls_loss = sigmoid_focal_loss(cls_logits, cls_labels)
+
+        target_boxes = targets[:, :-1]
+        reg_loss = giou_loss(reg_outputs, target_boxes, reduction="none")
+        reg_loss = reg_loss.sum(dim=1)
+
+        ctr_targets = self.compute_centerness_targets(targets, points, strides, reg_range)
+        bce_loss = nn.BCEWithLogitsLoss(reduction="none")
+        ctr_loss = bce_loss(ctr_logits, ctr_targets)
+
+        final_loss = cls_loss + reg_loss + ctr_loss
+        return dict(cls_loss, reg_loss, ctr_loss, final_loss)
+
 
     def inference(
         self, points, strides, cls_logits, reg_outputs, ctr_logits, image_shapes
     ):
+        """
+        Fill in the missing code here. The inference is also a bit involved. It is
+        much easier to think about the inference on a single image
+        (a) Loop over every pyramid level
+            (1) compute the object scores
+            (2) deocde the boxes
+            (3) only keep boxes with scores larger than self.score_thresh
+        (b) Combine all object candidates across levels and keep the top K (self.topk_candidates)
+        (c) Remove boxes outside of the image boundaries (due to padding)
+        (d) Run non-maximum suppression to remove any duplicated boxes
+        (e) keep the top K boxes after NMS (self.detections_per_img)
+
+        Some of the implementation details that might not be obvious
+        * As the output regression target is divided by the feature stride during training,
+        you will have to multiply the regression outputs by the stride at inference time.
+        * Most of the detectors will allow two overlapping boxes from two different categories
+        (e.g., one from "shirt", the other from "person"). That means that
+            (a) one can decode two same boxes of different categories from one location;
+            (b) NMS is only performed within each category.
+        * Regression range is not used, as the range is not enforced during inference.
+        * image_shapes is needed to remove boxes outside of the images.
+        * Output labels needed to be offseted by +1 to compensate for the input label transform
+
+        The output must be a list of dictionary items (one for each image) following
+        [
+            {
+                "boxes": Tensor (N x 4)
+                "scores": Tensor (N, )
+                "labels": Tensor (N, )
+            },
+        ]
+        """
         return detections
