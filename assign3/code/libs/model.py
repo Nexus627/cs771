@@ -70,21 +70,13 @@ class FCOSClassificationHead(nn.Module):
         Some re-arrangement of the outputs is often preferred for training / inference.
         You can choose to do it here, or in compute_loss / inference.
         """
-        all_cls_logits = []
-
+        output = [] # Create a list and append all the classification logits in it
         for features in x:
-            cls_logits = self.conv(features)
-            cls_logits = self.cls_logits(cls_logits)
-
-            # Permute classification output from (N, A * K, H, W) to (N, HWA, K).
-            N, _, H, W = cls_logits.shape
-            cls_logits = cls_logits.view(N, -1, self.num_classes, H, W)
-            cls_logits = cls_logits.permute(0, 3, 4, 1, 2)
-            cls_logits = cls_logits.reshape(N, -1, self.num_classes)  # Size=(N, HWA, 4)
-
-            all_cls_logits.append(cls_logits)
-
-        return torch.cat(all_cls_logits, dim=1)
+          # Pass the features corresponding to a depth to the entire head
+          logits = self.conv(features)
+          output.append(self.cls_logits(logits)) # shape will be N x C x H x W with C being no of classes (20 in our case)
+          # Rearrangement of outputs is done in compute loss function
+        return output
 
 
 class FCOSRegressionHead(nn.Module):
@@ -144,30 +136,19 @@ class FCOSRegressionHead(nn.Module):
         Some re-arrangement of the outputs is often preferred for training / inference.
         You can choose to do it here, or in compute_loss / inference.
         """
-        all_bbox_regression = []
-        all_bbox_ctrness = []
+        # Now we have 2 lists, one for regression outputs and one for centerness outputs
+        out_regress = []
+        out_centerness = []
 
-        for features in x:
-            bbox_feature = self.conv(features)
-            bbox_regression = nn.functional.relu(self.bbox_reg(bbox_feature))
-            bbox_ctrness = self.bbox_ctrness(bbox_feature)
+        for feature in x:
+          # Pass every feature from every depth (feature pyramid) to the regression head to get logits
+          logits = self.conv(feature)
+          # These logits are passed to bbox conv to get 4 numbered output and bbox centerness to get 1 number output
+          out_regress.append(self.bbox_reg(logits)) # shape will be N x 4 x H x W
+          out_centerness.append(self.bbox_ctrness(logits)) # shape will be N x 1 x H x W
+          # Rearrangement of outputs is done in compute loss function
 
-            # # permute bbox regression output from (N, 4 * A, H, W) to (N, HWA, 4).
-            N, _, H, W = bbox_regression.shape
-            bbox_regression = bbox_regression.view(N, -1, 4, H, W)
-            bbox_regression = bbox_regression.permute(0, 3, 4, 1, 2)
-            bbox_regression = bbox_regression.reshape(N, -1, 4)  # Size=(N, HWA, 4)
-            all_bbox_regression.append(bbox_regression)
-
-            #permute bbox ctrness output from (N, 1 * A, H, W) to (N, HWA, 1).
-            bbox_ctrness = bbox_ctrness.view(N, -1, 1, H, W)
-            bbox_ctrness = bbox_ctrness.permute(0, 3, 4, 1, 2)
-            bbox_ctrness = bbox_ctrness.reshape(N, -1, 1)
-            all_bbox_ctrness.append(bbox_ctrness)
-
-        # return all_bbox_regression, all_bbox_ctrness
-        return torch.cat(all_bbox_regression, dim=1), torch.cat(all_bbox_ctrness, dim=1)
-        # return x, x
+        return out_regress, out_centerness
 
 
 class FCOS(nn.Module):
@@ -364,7 +345,7 @@ class FCOS(nn.Module):
         else:
             # inference: decode / postprocess the boxes
             detections = self.inference(
-                points, strides, cls_logits, reg_outputs, ctr_logits, images.image_sizes
+                points, strides, cls_logits, reg_outputs, ctr_logits, images.image_sizes, fpn_features
             )
             # rescale the boxes to the input image resolution
             detections = self.transform.postprocess(
@@ -373,58 +354,74 @@ class FCOS(nn.Module):
             # return detectrion results during inference
             return detections
 
-    def compute_centerness_targets(self, targets, points, strides, reg_range):
-        # Extract bounding box coordinates from targets
-        boxes = targets[:, :-1]
+    """
+    Fill in the missing code here. This is probably the most tricky part
+    in this assignment. Here you will need to compute the object label for each point
+    within the feature pyramid. If a point lies around the center of a foreground object
+    (as controlled by self.center_sampling_radius), its regression and center-ness
+    targets will also need to be computed.
 
-        # Compute centerness targets
-        cx, cy = points[:, :, 0], points[:, :, 1]
-        l, t, r, b = boxes[:, :, 0], boxes[:, :, 1], boxes[:, :, 2], boxes[:, :, 3]
-        w, h = r - l, b - t
-        centerness = ((cx - l) / w) * ((cy - t) / h)
-        centerness = torch.sqrt(centerness)
+    Further, three loss terms will be attached to compare the model outputs to the
+    desired targets (that you have computed), including
+    (1) classification (using sigmoid focal for all points)
+    (2) regression loss (using GIoU and only on foreground points)
+    (3) center-ness loss (using binary cross entropy and only on foreground points)
 
-        # Normalize centerness values
-        x_range = reg_range[:, 1] - reg_range[:, 0]
-        y_range = reg_range[:, 3] - reg_range[:, 2]
-        centerness /= (x_range / strides) * (y_range / strides)
-        return centerness
+    Some of the implementation details that might not be obvious
+    * The output regression targets are divided by the feature stride (Eq 1 in the paper)
+    * All losses are normalized by the number of positive points (Eq 2 in the paper)
 
+    The output must be a dictionary including the loss values
+    {
+        "cls_loss": Tensor (1)
+        "reg_loss": Tensor (1)
+        "ctr_loss": Tensor (1)
+        "final_loss": Tensor (1)
+    }
+    where the final_loss is a sum of the three losses and will be used for training.
+    """
 
     def compute_loss(
         self, targets, points, strides, reg_range, cls_logits, reg_outputs, ctr_logits
     ):
+
         """
-        Fill in the missing code here. This is probably the most tricky part
-        in this assignment. Here you will need to compute the object label for each point
-        within the feature pyramid. If a point lies around the center of a foreground object
-        (as controlled by self.center_sampling_radius), its regression and center-ness
-        targets will also need to be computed.
+    Fill in the missing code here. The inference is also a bit involved. It is
+    much easier to think about the inference on a single image
+    (a) Loop over every pyramid level
+        (1) compute the object scores
+        (2) deocde the boxes
+        (3) only keep boxes with scores larger than self.score_thresh
+    (b) Combine all object candidates across levels and keep the top K (self.topk_candidates)
+    (c) Remove boxes outside of the image boundaries (due to padding)
+    (d) Run non-maximum suppression to remove any duplicated boxes
+    (e) keep the top K boxes after NMS (self.detections_per_img)
 
-        Further, three loss terms will be attached to compare the model outputs to the
-        desired targets (that you have computed), including
-        (1) classification (using sigmoid focal for all points)
-        (2) regression loss (using GIoU and only on foreground points)
-        (3) center-ness loss (using binary cross entropy and only on foreground points)
+    Some of the implementation details that might not be obvious
+    * As the output regression target is divided by the feature stride during training,
+    you will have to multiply the regression outputs by the stride at inference time.
+    * Most of the detectors will allow two overlapping boxes from two different categories
+    (e.g., one from "shirt", the other from "person"). That means that
+        (a) one can decode two same boxes of different categories from one location;
+        (b) NMS is only performed within each category.
+    * Regression range is not used, as the range is not enforced during inference.
+    * image_shapes is needed to remove boxes outside of the images.
+    * Output labels needed to be offseted by +1 to compensate for the input label transform
 
-        Some of the implementation details that might not be obvious
-        * The output regression targets are divided by the feature stride (Eq 1 in the paper)
-        * All losses are normalized by the number of positive points (Eq 2 in the paper)
-
-        The output must be a dictionary including the loss values
+    The output must be a list of dictionary items (one for each image) following
+    [
         {
-            "cls_loss": Tensor (1)
-            "reg_loss": Tensor (1)
-            "ctr_loss": Tensor (1)
-            "final_loss": Tensor (1)
-        }
-        where the final_loss is a sum of the three losses and will be used for training.
-        """
-        matched_ids = []
+            "boxes": Tensor (N x 4)
+            "scores": Tensor (N, )
+            "labels": Tensor (N, )
+        },
+    ]
+    """
+        # points # HxWx2
+        # list (batchsize), Number of points for all feature-levels --> GT-box Id
 
         #torch._assert(isinstance(target,list), "Model.py compute_loss: Expected target boxes to be of type List.")
         
-
         all_gt_boxes_targets = []
         all_gt_classes_targets = []
         
@@ -432,23 +429,34 @@ class FCOS(nn.Module):
         all_gt_ctrness_targets = []
 
         for tid,target in enumerate(targets):
+          # Get the coordinates of ground truth boxes for an example tid (it can have M objects)  
           gt_boxes = target['boxes']  # Mx4
+
+          # Compute center of a box; which looks like - (x0, y0, x1, y1)
           gt_centers = (gt_boxes[:, :2] + gt_boxes[:, 2:]) / 2  # Mx2 (M boxes)
           
           per_stride_gt_classes_targets = []
           per_stride_gt_boxes_targets = []
           per_stride_gt_reg_out = []
           per_stride_gt_ctrness_targets = []
-
+        
+          # Looping over all pyramid levels
           for i,stride in enumerate(strides):
             
+            # For a particular level, get the predicted points/anchors using the point generator
             pred = points[i].view(-1,2)   # HWx2,  or Nx2 (N anchors)
+
+            # Get the distance between the predicted points and the ground truth center
             pairwise_match = pred[:,None,:] - gt_centers[None,:,:] # NxMx2
             #print('pred_b',pred[:,None,:].shape)
             #print('gt_b',gt_centers[None,:,:].shape)
+
+            # Take only the points which are close to a particular threshold i.e the sampling_radius*stride
             pairwise_match = pairwise_match.abs_().max(dim=2).values < (self.center_sampling_radius*stride) # NxM
 
+            # Get the x, y for the predicted anchors
             x, y = pred.unsqueeze(dim=2).unbind(dim=1)  # Nx1,Nx1
+            # Top-left and bottom-right corners
             x0, y0, x1, y1 = gt_boxes.unsqueeze(dim=0).unbind(dim=2)  # 1xM each
 
             paired_dist = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
@@ -471,7 +479,7 @@ class FCOS(nn.Module):
             #print('pairwise_match',pairwise_match.shape)
             pairwise_match &= (t_dist > lower) & (t_dist < upper)  # N,M
 
-            # match the GT box with minimum area, if there are multiple GT matches
+            # match the Ground truth box with minimum area, if there are multiple Ground truth matches
             gt_areas = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])  # M
             pairwise_match = pairwise_match.to(torch.float32) * (1e8 - gt_areas[None, :])
             min_vals, matched_idx = pairwise_match.max(dim=1)  # R, per-anchor match
@@ -489,6 +497,7 @@ class FCOS(nn.Module):
             left_right = t_pred[:, [0, 2]]
             top_bottom = t_pred[:, [1, 3]]
 
+            # Centerness target formula
             gt_ctrness_targets = torch.sqrt(
                 (left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0])
                 * (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0])
@@ -511,6 +520,7 @@ class FCOS(nn.Module):
           all_gt_ctrness_targets.append(torch.cat(per_stride_gt_ctrness_targets,dim=0))
 
 
+        # Reshaping the classification and centerness logits
         cls_logits = [t.view(t.shape[0],t.shape[1],-1) for t in cls_logits]
         #reg_outputs = [t.view(t.shape[0],t.shape[1],-1) for t in reg_outputs]
         ctr_logits = [t.view(t.shape[0],t.shape[1],-1) for t in ctr_logits]
@@ -539,20 +549,21 @@ class FCOS(nn.Module):
         foregroud_mask = all_gt_classes_targets >= 0
         num_foreground = foregroud_mask.sum().item()
 
-        # classification loss
+        # classification loss - Sigmoid focal loss
         gt_classes_targets = torch.zeros_like(cls_logits)
         gt_classes_targets[foregroud_mask, all_gt_classes_targets[foregroud_mask]] = 1.0
         cls_loss = sigmoid_focal_loss(cls_logits, gt_classes_targets, reduction="sum")
 
-        # regression loss
+        # regression loss - GIoU loss
         reg_loss = giou_loss(all_gt_reg_out[foregroud_mask],all_gt_boxes_targets[foregroud_mask],reduction='sum')
         
-        # centerness loss
+        # centerness loss - Binary Cross Entropy
         ctr_logits = ctr_logits.squeeze(dim=-1)
         ctr_loss = nn.functional.binary_cross_entropy_with_logits(
             ctr_logits[foregroud_mask], all_gt_ctrness_targets[foregroud_mask], reduction="sum"
         )
 
+        # Normalize the losses for only foreground points and create a dictionary
         losses = {}
         losses['cls_loss'] = cls_loss / max(1,num_foreground)
         losses['reg_loss'] = reg_loss / max(1,num_foreground)
@@ -561,12 +572,9 @@ class FCOS(nn.Module):
         losses['final_loss'] = final_loss
         return losses
 
-
-
     def inference(
         self, points, strides, cls_logits, reg_outputs, ctr_logits, image_shapes, fpn_features
     ):  
-    
         detections = []
 
         cls_logits = [t.view(t.shape[0],t.shape[1],-1).permute(0,2,1) for t in cls_logits]  # List. (N,HW,C)

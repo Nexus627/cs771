@@ -199,8 +199,15 @@ object_detection_model.to(device)
 # Set the detection threshold
 detection_threshold = 0.5
 
-# Load the first image
-image_path = sys.argv[1]  # '1.jpg'
+# Load the image
+image_name = '000009.jpg'
+
+# Change the paths based on where the images are stored
+image_path = "/hdd2/srinath/cs771/assign3/data/VOCdevkit/VOC2007/JPEGImages/" + image_name
+output_path = "/hdd2/srinath/cs771/assign3/outputs/"
+
+# Or uncomment this and give the path of image as input argument from CLI
+# image_path = sys.argv[1]  # 
 bgr_image = cv2.imread(image_path)
 
 # Transform the image to tensor
@@ -233,3 +240,4 @@ annotated_image = draw_boxes(
     selected_boxes, predicted_class_names, selected_labels, rgb_image
 )
 plt.imshow(annotated_image)
+plt.imsave(output_path + image_name,annotated_image )
