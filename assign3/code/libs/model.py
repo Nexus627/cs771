@@ -382,93 +382,96 @@ class FCOS(nn.Module):
         "final_loss": Tensor (1)
     }
     where the final_loss is a sum of the three losses and will be used for training.
-    """
-        # points # HxWx2
+    """ 
+        full_ground_truth_boxes_targets = []
+        full_ground_truth_classes_targets = []
         
-        all_gt_boxes_targets = []
-        all_gt_classes_targets = []
-        
-        all_gt_reg_out = []
-        all_gt_ctrness_targets = []
+        full_ground_truth_regress_out = []
+        full_ground_truth_centerness_targets = []
 
-        for tid,target in enumerate(targets):
-          # Get the coordinates of ground truth boxes for an example tid (it can have M objects)  
-          gt_boxes = target['boxes']  # Mx4
+        for target_id,target in enumerate(targets):
+          # Get the coordinates of ground truth boxes for an example target_id (it can have M objects)  
+          ground_truth_boxes = target['boxes']  # Mx4
 
           # Compute center of a box; which looks like - (x0, y0, x1, y1)
-          gt_centers = (gt_boxes[:, :2] + gt_boxes[:, 2:]) / 2  # Mx2 (M boxes)
+          ground_truth_centers = (ground_truth_boxes[:, :2] + ground_truth_boxes[:, 2:]) / 2  # Mx2 (M boxes)
           
-          per_stride_gt_classes_targets = []
-          per_stride_gt_boxes_targets = []
-          per_stride_gt_reg_out = []
-          per_stride_gt_ctrness_targets = []
+          every_stride_ground_truth_classes_targets = []
+          every_stride_ground_truth_boxes_targets = []
+          every_stride_ground_truth_regress_outputs = []
+          every_stride_ground_truth_centerness_targets = []
         
           # Looping over all pyramid levels
           for level,stride in enumerate(strides):
             
             # For a particular level, get the predicted points/anchors using the point generator
-            pred = points[level].view(-1,2)   # HWx2,  or Nx2 (N anchors)
+            predictions = points[level].view(-1,2)   # HWx2,  or Nx2 (N anchors)
 
             # Get the distance between the predicted points and the ground truth center
-            pairwise_match = pred[:,None,:] - gt_centers[None,:,:] # NxMx2
+            pairwise_predictions_matching = predictions[:,None,:] - ground_truth_centers[None,:,:] # NxMx2
 
             # Take only the points which are close to a particular threshold i.e the sampling_radius*stride
-            pairwise_match = pairwise_match.abs_().max(dim=2).values < (self.center_sampling_radius*stride) # NxM
+            pairwise_predictions_matching = pairwise_predictions_matching.abs_().max(dim=2).values < (self.center_sampling_radius*stride) # NxM
 
-            # Get the x, y for the predicted anchors
-            x, y = pred.unsqueeze(dim=2).unbind(dim=1)  # Nx1,Nx1
+            # Get the x, y for the predicted anchors. Unbind removes the tensor dimension and returns as numbers
+            x, y = predictions.unsqueeze(dim=2).unbind(dim=1)  # Nx1,Nx1
             # Top-left and bottom-right corners
-            x0, y0, x1, y1 = gt_boxes.unsqueeze(dim=0).unbind(dim=2)  # 1xM each
+            x0, y0, x1, y1 = ground_truth_boxes.unsqueeze(dim=0).unbind(dim=2)  # 1xM each
 
-            paired_dist = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
-            pairwise_match &= paired_dist.min(dim=2).values > 0   # NxM (Inside the GTbox)
+            # Concatenates a sequence of tensors along a new dimension using torch stack
+            pairwise_distance = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
+
+            pairwise_predictions_matching &= pairwise_distance.min(dim=2).values > 0   # NxM (Inside the Ground truth box)
              
-            t_dist = paired_dist.abs().max(dim=2).values
+            target_distance = pairwise_distance.abs().max(dim=2).values
+            # Get the lower and upper values from regression range
             lower, upper = reg_range[level][0], reg_range[level][1]
             
-            #print('pairwise_match',pairwise_match.shape)
-            pairwise_match &= (t_dist > lower) & (t_dist < upper)  # N,M
+            # The target distance should be in the range given by the particular level in regression range. 
+            # So, for every level, the lower and upper bounds are fixed
+            pairwise_predictions_matching &= (target_distance > lower) & (target_distance < upper)  # N,M
 
             # match the Ground truth box with minimum area, if there are multiple Ground truth matches
-            gt_areas = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])  # M
-            pairwise_match = pairwise_match.to(torch.float32) * (1e8 - gt_areas[None, :])
-            min_vals, matched_idx = pairwise_match.max(dim=1)  # R, per-anchor match
+            # Area is nothing but the l*b where l and b can be computed by the top-left and bottom-right coordinates
+            ground_truth_areas = (ground_truth_boxes[:, 2] - ground_truth_boxes[:, 0]) * (ground_truth_boxes[:, 3] - ground_truth_boxes[:, 1])  # M
+            pairwise_predictions_matching = pairwise_predictions_matching.to(torch.float32) * (1e8 - ground_truth_areas[None, :])
+            min_vals, matched_idx = pairwise_predictions_matching.max(dim=1)  # R, per-anchor match
             matched_idx[min_vals < 1e-5] = -1  # unmatched anchors are assigned -1, (N,)
 
+            # Clip the ground truth class targets and boxes targets with minimum value as 0
+            ground_truth_class_targets = target["labels"][matched_idx.clip(min=0)]   # (N,)
+            ground_truth_boxes_targets = target["boxes"][matched_idx.clip(min=0)]      # (N,4)
+            ground_truth_class_targets[matched_idx < 0] = -1
 
-            gt_classes_targets = target["labels"][matched_idx.clip(min=0)]   # (N,)
-            gt_boxes_targets = target["boxes"][matched_idx.clip(min=0)]      # (N,4)
-            gt_classes_targets[matched_idx < 0] = -1
-
-            lt_pred = pred - gt_boxes_targets[:,:2]         #(N,2), calculating l* and t* for N points
-            rb_pred = gt_boxes_targets[:,2:] - pred         #(N,2) i.e calculating r* and b* for N points
-            t_pred = torch.cat([lt_pred,rb_pred],dim=-1)/stride     #(N,4)
+            top_left_pred = predictions - ground_truth_boxes_targets[:,:2]         #(N,2), calculating l* and t* for N points
+            bottom_right_pred = ground_truth_boxes_targets[:,2:] - predictions         #(N,2) i.e calculating r* and b* for N points
+            target_pred = torch.cat([top_left_pred,bottom_right_pred],dim=-1)/stride     #(N,4)
             
             # Rearranging to get the lr and tb, will be useful while calculating the centerness metric
-            left_right = t_pred[:, [0, 2]]
-            top_bottom = t_pred[:, [1, 3]]
+            left_right = target_pred[:, [0, 2]]
+            top_bottom = target_pred[:, [1, 3]]
 
-            # Centerness target formula
-            gt_ctrness_targets = torch.sqrt(
+            # Centerness target formula from paper
+            ground_truth_centerness_targets = torch.sqrt(
                 (left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0])
                 * (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0])
             )          # (N,)
 
             # For the particular level and image, get the regression outputs and reshape it
-            reg_out = (reg_outputs[level][tid].view(4,-1)).permute(1,0)*stride     # (N(HW),4)
-            gt_reg_out = torch.cat([pred-reg_out[:,:2],pred+reg_out[:,2:]],dim=-1)   # HWx4,  or Nx4 (N anchors)
+            regression_output = (reg_outputs[level][target_id].view(4,-1)).permute(1,0)*stride     # (N(HW),4)
+            ground_truth_regress_output = torch.cat([predictions-regression_output[:,:2],predictions+regression_output[:,2:]],dim=-1)   # HWx4,  or Nx4 (N anchors)
             
-            #print("gt_ctrness_targets",gt_ctrness_targets.shape)
-            per_stride_gt_classes_targets.append(gt_classes_targets)
-            per_stride_gt_boxes_targets.append(gt_boxes_targets)
-            per_stride_gt_reg_out.append(gt_reg_out)
-            per_stride_gt_ctrness_targets.append(gt_ctrness_targets)
+            # Append all the ground truth targets related to one stride (feature level)
+            every_stride_ground_truth_classes_targets.append(ground_truth_class_targets)
+            every_stride_ground_truth_boxes_targets.append(ground_truth_boxes_targets)
+            every_stride_ground_truth_regress_outputs.append(ground_truth_regress_output)
+            every_stride_ground_truth_centerness_targets.append(ground_truth_centerness_targets)
 
-          
-          all_gt_classes_targets.append(torch.cat(per_stride_gt_classes_targets,dim=0))  # List, batchsz. (A,1) 
-          all_gt_boxes_targets.append(torch.cat(per_stride_gt_boxes_targets,dim=0))          # List, (A,4) 
-          all_gt_reg_out.append(torch.cat(per_stride_gt_reg_out,dim=0))     # list ((A,4) : A = (HW)_1+(HW)_2+(HW)_3
-          all_gt_ctrness_targets.append(torch.cat(per_stride_gt_ctrness_targets,dim=0))
+          # Append all the ground truth targets for all stride levels (feature pyramid) to a bigger list
+          full_ground_truth_classes_targets.append(torch.cat(every_stride_ground_truth_classes_targets,dim=0))  # List, batchsz. (A,1) 
+          full_ground_truth_boxes_targets.append(torch.cat(every_stride_ground_truth_boxes_targets,dim=0))          # List, (A,4) 
+          full_ground_truth_regress_out.append(torch.cat(every_stride_ground_truth_regress_outputs,dim=0))     # list ((A,4) : A = (HW)_1+(HW)_2+(HW)_3
+          full_ground_truth_centerness_targets.append(torch.cat(every_stride_ground_truth_centerness_targets,dim=0))
 
 
         # Reshaping the classification and centerness logits
@@ -476,33 +479,37 @@ class FCOS(nn.Module):
         #reg_outputs = [t.view(t.shape[0],t.shape[1],-1) for t in reg_outputs]
         ctr_logits = [t.view(t.shape[0],t.shape[1],-1) for t in ctr_logits]
         
+        # Contiguous memory allocation for all the predicted classification and centerness logits.
         cls_logits,ctr_logits = (
                       torch.cat(cls_logits,dim=2).permute(0,2,1).contiguous(), # (bs,A,C)
                       torch.cat(ctr_logits,dim=2).permute(0,2,1).contiguous()) # (bs,A,1)
         
-        all_gt_boxes_targets, all_gt_classes_targets,all_gt_reg_out,all_gt_ctrness_targets = (
-            torch.stack(all_gt_boxes_targets),
-            torch.stack(all_gt_classes_targets),
-            torch.stack(all_gt_reg_out),
-            torch.stack(all_gt_ctrness_targets)
+        full_ground_truth_boxes_targets, full_ground_truth_classes_targets,full_ground_truth_regress_out,full_ground_truth_centerness_targets = (
+            torch.stack(full_ground_truth_boxes_targets),
+            torch.stack(full_ground_truth_classes_targets),
+            torch.stack(full_ground_truth_regress_out),
+            torch.stack(full_ground_truth_centerness_targets)
         )      # [bs,A,4], [bs,A,1] , [bs,A,4], [bs,A,1]
 
-        # compute foregroud
-        foregroud_mask = all_gt_classes_targets >= 0
+        # compute foregroud. When the target labels are >=0, it's forground (note the =)
+        foregroud_mask = full_ground_truth_classes_targets >= 0
         num_foreground = foregroud_mask.sum().item()
 
         # classification loss - Sigmoid focal loss
-        gt_classes_targets = torch.zeros_like(cls_logits)
-        gt_classes_targets[foregroud_mask, all_gt_classes_targets[foregroud_mask]] = 1.0
-        cls_loss = sigmoid_focal_loss(cls_logits, gt_classes_targets, reduction="sum")
+        ground_truth_class_targets = torch.zeros_like(cls_logits)
+        # Similar to One-hot encoding, just give 1 to the index where the class object idx is present
+        ground_truth_class_targets[foregroud_mask, full_ground_truth_classes_targets[foregroud_mask]] = 1.0
+        cls_loss = sigmoid_focal_loss(cls_logits, ground_truth_class_targets, reduction="sum")
 
         # regression loss - GIoU loss
-        reg_loss = giou_loss(all_gt_reg_out[foregroud_mask],all_gt_boxes_targets[foregroud_mask],reduction='sum')
+        # It takes the ground truth regression labels and the predicted regression labels, but only for the foreground points
+        reg_loss = giou_loss(full_ground_truth_regress_out[foregroud_mask],full_ground_truth_boxes_targets[foregroud_mask],reduction='sum')
         
         # centerness loss - Binary Cross Entropy
+        # It also takes the ground truth centerness logits and the predicted centerness values only for the foreground points
         ctr_logits = ctr_logits.squeeze(dim=-1)
         ctr_loss = nn.functional.binary_cross_entropy_with_logits(
-            ctr_logits[foregroud_mask], all_gt_ctrness_targets[foregroud_mask], reduction="sum"
+            ctr_logits[foregroud_mask], full_ground_truth_centerness_targets[foregroud_mask], reduction="sum"
         )
 
         # Normalize the losses for only foreground points and create a dictionary
@@ -556,30 +563,35 @@ class FCOS(nn.Module):
         ctr_logits = [t.view(t.shape[0],t.shape[1],-1).permute(0,2,1) for t in ctr_logits]  # List. (N,HW,1)
 
         # looping over every image
-        for idx in range(len(image_shapes)):
-            image_shape = image_shapes[idx]
+        for image_id in range(len(image_shapes)):
+            image_shape = image_shapes[image_id]
 
+            # For every image, we have 3 lists which stores the box coordinates, the score/confidcence of prediction
+            # and the label information of the prediction
             image_boxes = []
             image_scores = []
             image_labels = []
 
-            # loop over all pyramid levels
+            # loop over all the feature pyramid levels
             for level, stride in enumerate(strides):
                 # Find the classification, regression and centerness score for every image at every level 
-                cls_logits_level = cls_logits[level][idx]   # (HW,C)
-                ctr_logits_level = ctr_logits[level][idx]   # (HW,1)
-                reg_outputs_level = reg_outputs[level][idx] # (HW,4)
+                # HW --> N where the understanding is that the number of anchors in a feature space at a particular level
+                # will be equal to the dimensions of the feature space because every point in a particular level in feature space
+                # is a potential prediction and is mapped back to image space to understand whether it has some information or not
+                cls_logits_level = cls_logits[level][image_id]   # (HW,C)
+                ctr_logits_level = ctr_logits[level][image_id]   # (HW,1)
+                reg_outputs_level = reg_outputs[level][image_id] # (HW,4)
 
                 num_classes = cls_logits_level.shape[-1]
-                # compute scores
+                # compute scores, formula from paper
                 scores_level = torch.sqrt(torch.sigmoid(cls_logits_level) * torch.sigmoid(ctr_logits_level)).flatten()
-                # (HW,C) -->(HW*C)
+                # (HW,C) -->(HW*C) i.e for C classes, we get scores
 
                 # threshold scores. Take the boxes which satisfies a particular threshold
                 keep_ids = scores_level > self.score_thresh
                 scores_level_thresholded = scores_level[keep_ids]
                 topk_idxs = torch.where(keep_ids)[0]
-                # Getting the number of boxes
+                # Getting the number of boxes satisfying the threhold criteria
                 num_ids = min(len(topk_idxs),self.topk_candidates)
 
                 # keep only top K candidates
@@ -590,36 +602,41 @@ class FCOS(nn.Module):
 
                 labels_per_level = topk_idxs % num_classes
 
-                pred = points[level].view(-1,2)
+                predictions = points[level].view(-1,2)
                 reg_out = reg_outputs_level*stride     # (N(HW),4)
-                boxes_pred = torch.cat([pred-reg_out[:,:2],pred+reg_out[:,2:]],dim=-1)   # HWx4,  or Nx4 (N anchors)
+                boxes_pred = torch.cat([predictions-reg_out[:,:2],predictions+reg_out[:,2:]],dim=-1)  
+                # HWx4,  or Nx4 (N anchors) as each pixel is considered as a potential anchor in the feature space.
 
                 boxes_pred = boxes_pred[box_ids]
 
-                boxes_x = boxes_pred[...,0::2]
-                boxes_y = boxes_pred[...,1::2]
-                # clip boxes so that it stays within image
-                boxes_x = boxes_x.clamp(min = 0, max = image_shape[1])
-                boxes_y = boxes_y.clamp(min = 0, max = image_shape[0])
+                # Get all the predicted boxes, x is indexed at 0 and y at 1
+                boxes_pred_x = boxes_pred[...,0::2]
+                boxes_pred_y = boxes_pred[...,1::2]
+                # clip boxes so that it stays within image. Sometimes, the predictions can be outside the image dimensions!
+                boxes_pred_x = boxes_pred_x.clamp(min = 0, max = image_shape[1])
+                boxes_pred_y = boxes_pred_y.clamp(min = 0, max = image_shape[0])
                 
-                boxes_level_clipped = torch.stack([boxes_x[:,0],boxes_y[:,0],boxes_x[:,1],boxes_y[:,1]],dim=-1)
+                boxes_level_clipped = torch.stack([boxes_pred_x[:,0],boxes_pred_y[:,0],boxes_pred_x[:,1],boxes_pred_y[:,1]],dim=-1)
 
                 image_boxes.append(boxes_level_clipped)
                 image_scores.append(scores_level_thresholded_top_k)
                 image_labels.append(labels_per_level + 1)    
             
+            # Stack the predicted boxes, scores and labels so it can be passed to nms as a batch
             image_boxes = torch.cat(image_boxes, dim = 0)
             image_scores = torch.cat(image_scores, dim = 0)
             image_labels = torch.cat(image_labels, dim = 0)
 
-            # non-maximum suppression
-            keep = batched_nms(image_boxes, image_scores, image_labels, self.nms_thresh)[ : self.detections_per_img]
+            # non-maximum suppression. Remove the boxes for which the predicted threshold is less than the nms_threshold
+            # Incase it has a lots of predictions in an image, restrict it by how many detections we have per image 
+            # (from detections_per_images)
+            boxes_top_keep = batched_nms(image_boxes, image_scores, image_labels, self.nms_thresh)[ : self.detections_per_img]
 
             detections.append(
                 {
-                    "boxes": image_boxes[keep],
-                    "scores": image_scores[keep],
-                    "labels": image_labels[keep],
+                    "boxes": image_boxes[boxes_top_keep],
+                    "scores": image_scores[boxes_top_keep],
+                    "labels": image_labels[boxes_top_keep],
                 }
             )
 
