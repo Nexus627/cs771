@@ -411,8 +411,6 @@ class FCOS(nn.Module):
 
             # Get the distance between the predicted points and the ground truth center
             pairwise_match = pred[:,None,:] - gt_centers[None,:,:] # NxMx2
-            #print('pred_b',pred[:,None,:].shape)
-            #print('gt_b',gt_centers[None,:,:].shape)
 
             # Take only the points which are close to a particular threshold i.e the sampling_radius*stride
             pairwise_match = pairwise_match.abs_().max(dim=2).values < (self.center_sampling_radius*stride) # NxM
@@ -426,8 +424,6 @@ class FCOS(nn.Module):
             pairwise_match &= paired_dist.min(dim=2).values > 0   # NxM (Inside the GTbox)
              
             t_dist = paired_dist.abs().max(dim=2).values
-            #print("t_dist shape",t_dist.shape)
-            #t_dist = torch.cat([lt,rb],dim=2).abs_().max(dim=2).values # N,M
             lower, upper = reg_range[level][0], reg_range[level][1]
             
             #print('pairwise_match',pairwise_match.shape)
@@ -479,18 +475,10 @@ class FCOS(nn.Module):
         cls_logits = [t.view(t.shape[0],t.shape[1],-1) for t in cls_logits]
         #reg_outputs = [t.view(t.shape[0],t.shape[1],-1) for t in reg_outputs]
         ctr_logits = [t.view(t.shape[0],t.shape[1],-1) for t in ctr_logits]
-
-        #cls_logits,reg_outputs,ctr_logits = (
-        #              torch.cat(cls_logits,dim=2).permute(0,2,1).contiguous(), # (bs,A,C)
-        #              torch.cat(reg_outputs,dim=2).permute(0,2,1).contiguous(),# (bs,A,4)
-        #              torch.cat(ctr_logits,dim=2).permute(0,2,1).contiguous()) # (bs,A,1)
         
         cls_logits,ctr_logits = (
                       torch.cat(cls_logits,dim=2).permute(0,2,1).contiguous(), # (bs,A,C)
                       torch.cat(ctr_logits,dim=2).permute(0,2,1).contiguous()) # (bs,A,1)
-
-        #print("cls_logits",cls_logits.shape)
-        #print("ctr_logits",ctr_logits.shape)
         
         all_gt_boxes_targets, all_gt_classes_targets,all_gt_reg_out,all_gt_ctrness_targets = (
             torch.stack(all_gt_boxes_targets),
@@ -499,7 +487,6 @@ class FCOS(nn.Module):
             torch.stack(all_gt_ctrness_targets)
         )      # [bs,A,4], [bs,A,1] , [bs,A,4], [bs,A,1]
 
-        #print("all_gt_ctrness_targets",all_gt_ctrness_targets.shape)
         # compute foregroud
         foregroud_mask = all_gt_classes_targets >= 0
         num_foreground = foregroud_mask.sum().item()
@@ -570,11 +557,6 @@ class FCOS(nn.Module):
 
         # looping over every image
         for idx in range(len(image_shapes)):
-            # find the regression, classification and correctness score per image
-            #cls_logits_image = cls_logits[idx]
-            #reg_outputs_image = reg_outputs[idx]
-            #ctr_logits_image = ctr_logits[idx]
-            
             image_shape = image_shapes[idx]
 
             image_boxes = []
@@ -583,6 +565,7 @@ class FCOS(nn.Module):
 
             # loop over all pyramid levels
             for level, stride in enumerate(strides):
+                # Find the classification, regression and centerness score for every image at every level 
                 cls_logits_level = cls_logits[level][idx]   # (HW,C)
                 ctr_logits_level = ctr_logits[level][idx]   # (HW,1)
                 reg_outputs_level = reg_outputs[level][idx] # (HW,4)
@@ -592,10 +575,11 @@ class FCOS(nn.Module):
                 scores_level = torch.sqrt(torch.sigmoid(cls_logits_level) * torch.sigmoid(ctr_logits_level)).flatten()
                 # (HW,C) -->(HW*C)
 
-                # threshold scores
+                # threshold scores. Take the boxes which satisfies a particular threshold
                 keep_ids = scores_level > self.score_thresh
                 scores_level_thresholded = scores_level[keep_ids]
                 topk_idxs = torch.where(keep_ids)[0]
+                # Getting the number of boxes
                 num_ids = min(len(topk_idxs),self.topk_candidates)
 
                 # keep only top K candidates
@@ -614,22 +598,10 @@ class FCOS(nn.Module):
 
                 boxes_x = boxes_pred[...,0::2]
                 boxes_y = boxes_pred[...,1::2]
-                # get boxes
-                #left = reg_outputs_level[0] * stride
-                #top = reg_outputs_level[1] * stride
-                #right = reg_outputs_level[2] * stride
-                #bottom = reg_outputs_level[3] * stride
-
-                #x_0 = points.permute(2,0,1)[0] - left
-                #x_1 = right + points.permute(2,0,1)[0]
-                #y_0 = points.permute(2,0,1)[1] - top
-                #y_1 = bottom + points.permute(2,0,1)[1]
-
-                # clip boxes to stay within image
+                # clip boxes so that it stays within image
                 boxes_x = boxes_x.clamp(min = 0, max = image_shape[1])
                 boxes_y = boxes_y.clamp(min = 0, max = image_shape[0])
                 
-                #boxes_level_clipped = torch.cat([boxes_x, boxes_y], dim=-1)
                 boxes_level_clipped = torch.stack([boxes_x[:,0],boxes_y[:,0],boxes_x[:,1],boxes_y[:,1]],dim=-1)
 
                 image_boxes.append(boxes_level_clipped)
@@ -639,10 +611,6 @@ class FCOS(nn.Module):
             image_boxes = torch.cat(image_boxes, dim = 0)
             image_scores = torch.cat(image_scores, dim = 0)
             image_labels = torch.cat(image_labels, dim = 0)
-
-            #print("boxes",image_boxes.shape)
-            #print("scores",image_scores.shape)
-            #print("labels",image_labels.shape)
 
             # non-maximum suppression
             keep = batched_nms(image_boxes, image_scores, image_labels, self.nms_thresh)[ : self.detections_per_img]
