@@ -354,7 +354,10 @@ class FCOS(nn.Module):
             # return detectrion results during inference
             return detections
 
-    """
+    def compute_loss(
+        self, targets, points, strides, reg_range, cls_logits, reg_outputs, ctr_logits
+    ):
+        """
     Fill in the missing code here. This is probably the most tricky part
     in this assignment. Here you will need to compute the object label for each point
     within the feature pyramid. If a point lies around the center of a foreground object
@@ -380,47 +383,7 @@ class FCOS(nn.Module):
     }
     where the final_loss is a sum of the three losses and will be used for training.
     """
-
-    def compute_loss(
-        self, targets, points, strides, reg_range, cls_logits, reg_outputs, ctr_logits
-    ):
-
-        """
-    Fill in the missing code here. The inference is also a bit involved. It is
-    much easier to think about the inference on a single image
-    (a) Loop over every pyramid level
-        (1) compute the object scores
-        (2) deocde the boxes
-        (3) only keep boxes with scores larger than self.score_thresh
-    (b) Combine all object candidates across levels and keep the top K (self.topk_candidates)
-    (c) Remove boxes outside of the image boundaries (due to padding)
-    (d) Run non-maximum suppression to remove any duplicated boxes
-    (e) keep the top K boxes after NMS (self.detections_per_img)
-
-    Some of the implementation details that might not be obvious
-    * As the output regression target is divided by the feature stride during training,
-    you will have to multiply the regression outputs by the stride at inference time.
-    * Most of the detectors will allow two overlapping boxes from two different categories
-    (e.g., one from "shirt", the other from "person"). That means that
-        (a) one can decode two same boxes of different categories from one location;
-        (b) NMS is only performed within each category.
-    * Regression range is not used, as the range is not enforced during inference.
-    * image_shapes is needed to remove boxes outside of the images.
-    * Output labels needed to be offseted by +1 to compensate for the input label transform
-
-    The output must be a list of dictionary items (one for each image) following
-    [
-        {
-            "boxes": Tensor (N x 4)
-            "scores": Tensor (N, )
-            "labels": Tensor (N, )
-        },
-    ]
-    """
         # points # HxWx2
-        # list (batchsize), Number of points for all feature-levels --> GT-box Id
-
-        #torch._assert(isinstance(target,list), "Model.py compute_loss: Expected target boxes to be of type List.")
         
         all_gt_boxes_targets = []
         all_gt_classes_targets = []
@@ -567,6 +530,38 @@ class FCOS(nn.Module):
     def inference(
         self, points, strides, cls_logits, reg_outputs, ctr_logits, image_shapes, fpn_features
     ):  
+        """
+    Fill in the missing code here. The inference is also a bit involved. It is
+    much easier to think about the inference on a single image
+    (a) Loop over every pyramid level
+        (1) compute the object scores
+        (2) deocde the boxes
+        (3) only keep boxes with scores larger than self.score_thresh
+    (b) Combine all object candidates across levels and keep the top K (self.topk_candidates)
+    (c) Remove boxes outside of the image boundaries (due to padding)
+    (d) Run non-maximum suppression to remove any duplicated boxes
+    (e) keep the top K boxes after NMS (self.detections_per_img)
+
+    Some of the implementation details that might not be obvious
+    * As the output regression target is divided by the feature stride during training,
+    you will have to multiply the regression outputs by the stride at inference time.
+    * Most of the detectors will allow two overlapping boxes from two different categories
+    (e.g., one from "shirt", the other from "person"). That means that
+        (a) one can decode two same boxes of different categories from one location;
+        (b) NMS is only performed within each category.
+    * Regression range is not used, as the range is not enforced during inference.
+    * image_shapes is needed to remove boxes outside of the images.
+    * Output labels needed to be offseted by +1 to compensate for the input label transform
+
+    The output must be a list of dictionary items (one for each image) following
+    [
+        {
+            "boxes": Tensor (N x 4)
+            "scores": Tensor (N, )
+            "labels": Tensor (N, )
+        },
+    ]
+    """
         detections = []
 
         cls_logits = [t.view(t.shape[0],t.shape[1],-1).permute(0,2,1) for t in cls_logits]  # List. (N,HW,C)
