@@ -441,10 +441,10 @@ class FCOS(nn.Module):
           per_stride_gt_ctrness_targets = []
         
           # Looping over all pyramid levels
-          for i,stride in enumerate(strides):
+          for level,stride in enumerate(strides):
             
             # For a particular level, get the predicted points/anchors using the point generator
-            pred = points[i].view(-1,2)   # HWx2,  or Nx2 (N anchors)
+            pred = points[level].view(-1,2)   # HWx2,  or Nx2 (N anchors)
 
             # Get the distance between the predicted points and the ground truth center
             pairwise_match = pred[:,None,:] - gt_centers[None,:,:] # NxMx2
@@ -461,20 +461,11 @@ class FCOS(nn.Module):
 
             paired_dist = torch.stack([x - x0, y - y0, x1 - x, y1 - y], dim=2)
             pairwise_match &= paired_dist.min(dim=2).values > 0   # NxM (Inside the GTbox)
-    
-            lt_1 = pred[:,None,:]
-            lt_2 = gt_boxes[:,:2,None]
-            #print('pred_shape',lt_1.shape)
-            #print('gt_shape',lt_2.shape)
-            #lt = lt_1-lt_2
-
-            #lt = (pred[:,None,:] - gt_boxes[:,:2,None])    # N,1,2 - M,2,1 --> N,M,2 
-            #rb = -(pred[:,None,:] - gt_boxes[:,2:,None])   # N,M,2
              
             t_dist = paired_dist.abs().max(dim=2).values
             #print("t_dist shape",t_dist.shape)
             #t_dist = torch.cat([lt,rb],dim=2).abs_().max(dim=2).values # N,M
-            lower, upper = reg_range[i][0], reg_range[i][1]
+            lower, upper = reg_range[level][0], reg_range[level][1]
             
             #print('pairwise_match',pairwise_match.shape)
             pairwise_match &= (t_dist > lower) & (t_dist < upper)  # N,M
@@ -490,10 +481,11 @@ class FCOS(nn.Module):
             gt_boxes_targets = target["boxes"][matched_idx.clip(min=0)]      # (N,4)
             gt_classes_targets[matched_idx < 0] = -1
 
-            lt_pred = pred - gt_boxes_targets[:,:2]         #(N,2)
-            rb_pred = gt_boxes_targets[:,2:] - pred         #(N,2)
+            lt_pred = pred - gt_boxes_targets[:,:2]         #(N,2), calculating l* and t* for N points
+            rb_pred = gt_boxes_targets[:,2:] - pred         #(N,2) i.e calculating r* and b* for N points
             t_pred = torch.cat([lt_pred,rb_pred],dim=-1)/stride     #(N,4)
-
+            
+            # Rearranging to get the lr and tb, will be useful while calculating the centerness metric
             left_right = t_pred[:, [0, 2]]
             top_bottom = t_pred[:, [1, 3]]
 
@@ -503,8 +495,8 @@ class FCOS(nn.Module):
                 * (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0])
             )          # (N,)
 
-
-            reg_out = (reg_outputs[i][tid].view(4,-1)).permute(1,0)*stride     # (N(HW),4)
+            # For the particular level and image, get the regression outputs and reshape it
+            reg_out = (reg_outputs[level][tid].view(4,-1)).permute(1,0)*stride     # (N(HW),4)
             gt_reg_out = torch.cat([pred-reg_out[:,:2],pred+reg_out[:,2:]],dim=-1)   # HWx4,  or Nx4 (N anchors)
             
             #print("gt_ctrness_targets",gt_ctrness_targets.shape)
@@ -627,7 +619,7 @@ class FCOS(nn.Module):
 
                 boxes_x = boxes_pred[...,0::2]
                 boxes_y = boxes_pred[...,1::2]
-                # get boxes --> TODO
+                # get boxes
                 #left = reg_outputs_level[0] * stride
                 #top = reg_outputs_level[1] * stride
                 #right = reg_outputs_level[2] * stride
@@ -638,7 +630,7 @@ class FCOS(nn.Module):
                 #y_0 = points.permute(2,0,1)[1] - top
                 #y_1 = bottom + points.permute(2,0,1)[1]
 
-                # clip boxes to stay within image --> TODO
+                # clip boxes to stay within image
                 boxes_x = boxes_x.clamp(min = 0, max = image_shape[1])
                 boxes_y = boxes_y.clamp(min = 0, max = image_shape[0])
                 
